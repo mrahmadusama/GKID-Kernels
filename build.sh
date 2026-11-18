@@ -145,7 +145,12 @@ echo "COMPILER_STRING=$COMPILER_STRING" >> $GITHUB_ENV
 cd $KSRC
 
 echo "::group::[+] pahole installation"
-build_and_install_pahole
+# Without pahole the build only fails ~30 minutes later at the vmlinux BTF
+# step ("pahole is not available"), so stop right away instead.
+if ! build_and_install_pahole; then
+  error "pahole is required for CONFIG_DEBUG_INFO_BTF; aborting early"
+  exit 1
+fi
 echo "::endgroup::"
 
 echo "::group::[+] Applied patches"

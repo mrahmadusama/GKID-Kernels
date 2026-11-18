@@ -458,8 +458,18 @@ build_and_install_pahole() {
 
     if [[ ! -d "$pahole_dir/.git" ]]; then
         rm -rf "$pahole_dir"
+        # git.kernel.org intermittently fails from CI runners; fall back to the
+        # official GitHub mirror of the same tree.
         git clone --depth=1 https://git.kernel.org/pub/scm/devel/pahole/pahole.git "$pahole_dir" || {
-            error "failed to clone pahole"
+            warning "kernel.org clone of pahole failed, trying GitHub mirror"
+            rm -rf "$pahole_dir"
+            git clone --depth=1 https://github.com/acmel/dwarves.git "$pahole_dir" || {
+                error "failed to clone pahole"
+                return 1
+            }
+        }
+        git -C "$pahole_dir" submodule update --init --depth=1 lib/bpf || {
+            error "failed to fetch pahole's libbpf submodule"
             return 1
         }
     else
