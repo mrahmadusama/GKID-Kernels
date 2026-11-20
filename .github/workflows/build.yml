@@ -292,12 +292,17 @@ jobs:
 
       - name: Send rejected patches to Telegram
         if: always()
+        env:
+          REJ_BOT_TOKEN: ${{ secrets.rej_BOT_TOKEN }}
+          REJ_CHAT_ID: ${{ secrets.rej_CHAT_ID }}
         run: |
-          if [ -d "rejected-patches-${{ matrix.name }}" ] && [ "$(find rejected-patches-${{ matrix.name }} -type f | wc -l)" -gt 0 ]; then
+          if [ -z "$REJ_BOT_TOKEN" ] || [ -z "$REJ_CHAT_ID" ]; then
+            echo "Telegram secrets for rejected patches not set, skipping"
+          elif [ -d "rejected-patches-${{ matrix.name }}" ] && [ "$(find rejected-patches-${{ matrix.name }} -type f | wc -l)" -gt 0 ]; then
             for file in rejected-patches-${{ matrix.name }}/*; do
               if [ -f "$file" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${{ secrets.rej_BOT_TOKEN }}/sendDocument" \
-                  -F chat_id="${{ secrets.rej_CHAT_ID }}" \
+                curl -s -X POST "https://api.telegram.org/bot${REJ_BOT_TOKEN}/sendDocument" \
+                  -F chat_id="${REJ_CHAT_ID}" \
                   -F document=@"$file" \
                   -F caption="Rejected patch: $(basename "$file") - ${{ matrix.name }}"
                 sleep 1
@@ -405,9 +410,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          [[ -n "$BOT_TOKEN" ]] || { echo "::error::BOT_TOKEN is not set"; exit 1; }
-          [[ -n "$CHAT_ID" ]] || { echo "::error::CHAT_ID is not set"; exit 1; }
-          [[ -n "$TOPIC_ID" ]] || { echo "::error::TOPIC_ID is not set"; exit 1; }
+          # Forks don't have the Telegram secrets; skip instead of failing the run.
+          if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" || -z "$TOPIC_ID" ]]; then
+            echo "::notice::Telegram secrets (BOT_TOKEN, CHAT_ID, TOPIC_ID) not set, skipping Telegram upload"
+            exit 0
+          fi
 
           # MULTI_KERNEL/KERNEL_VERSIONS/KERNEL_VERSION/ANDROID_RELEASE come
           # from prepare_release.py's export_github_env(). ANDROID_RELEASE
