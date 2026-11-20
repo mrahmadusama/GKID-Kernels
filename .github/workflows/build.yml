@@ -74,9 +74,14 @@ on:
         default: true
 
       NM:
-        description: "Enable NoMount support"
+        description: "Enable NoMount support (built-in driver + matching metamodule)"
         type: boolean
-        default: false
+        default: true
+
+      NM_REF:
+        description: "NoMount branch or full commit SHA (kernel driver and module use the same commit)"
+        type: string
+        default: "dev"
 
 env:
   MAN_DISABLE: true
@@ -109,12 +114,32 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      nomount_commit: ${{ steps.nomount.outputs.commit }}
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 1
+
+      - name: Resolve NoMount commit
+        id: nomount
+        env:
+          NM_REF: ${{ github.event.inputs.NM_REF }}
+        run: |
+          set -euo pipefail
+          ref="${NM_REF:-dev}"
+          if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            sha="$ref"
+          else
+            sha="$(git ls-remote https://github.com/maxsteeel/nomount "refs/heads/$ref" | cut -f1)"
+          fi
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve NoMount ref '$ref' (use a branch name or full commit SHA)"
+            exit 1
+          fi
+          echo "NoMount $ref -> $sha"
+          echo "commit=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Generate build matrix
         id: set-matrix
@@ -171,6 +196,7 @@ jobs:
           DROIDSPACES: ${{ inputs.DROIDSPACES }}
           NH: ${{ inputs.NH }}
           NM: ${{ inputs.NM }}
+          NOMOUNT_COMMIT: ${{ needs.prepare.outputs.nomount_commit }}
           BUILD_NAME: ${{ matrix.name }}
           RUN_NUM: -r${{ github.run_number }}
         run: |
@@ -266,12 +292,17 @@ jobs:
 
       - name: Send rejected patches to Telegram
         if: always()
+        env:
+          REJ_BOT_TOKEN: ${{ secrets.rej_BOT_TOKEN }}
+          REJ_CHAT_ID: ${{ secrets.rej_CHAT_ID }}
         run: |
-          if [ -d "rejected-patches-${{ matrix.name }}" ] && [ "$(find rejected-patches-${{ matrix.name }} -type f | wc -l)" -gt 0 ]; then
+          if [ -z "$REJ_BOT_TOKEN" ] || [ -z "$REJ_CHAT_ID" ]; then
+            echo "Telegram secrets for rejected patches not set, skipping"
+          elif [ -d "rejected-patches-${{ matrix.name }}" ] && [ "$(find rejected-patches-${{ matrix.name }} -type f | wc -l)" -gt 0 ]; then
             for file in rejected-patches-${{ matrix.name }}/*; do
               if [ -f "$file" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${{ secrets.rej_BOT_TOKEN }}/sendDocument" \
-                  -F chat_id="${{ secrets.rej_CHAT_ID }}" \
+                curl -s -X POST "https://api.telegram.org/bot${REJ_BOT_TOKEN}/sendDocument" \
+                  -F chat_id="${REJ_CHAT_ID}" \
                   -F document=@"$file" \
                   -F caption="Rejected patch: $(basename "$file") - ${{ matrix.name }}"
                 sleep 1
@@ -310,7 +341,7 @@ jobs:
             downloaded-artifacts/artifacts/*.zip
 
   release:
-    needs: build
+    needs: [prepare, build]
     if: always() && github.event.inputs.TODO != 'defconfig'
     runs-on: ubuntu-latest
     steps:
@@ -324,6 +355,15 @@ jobs:
         with:
           path: release-artifacts
           merge-multiple: true
+
+      - name: Build matching NoMount metamodule
+        if: ${{ inputs.NM }}
+        env:
+          NOMOUNT_COMMIT: ${{ needs.prepare.outputs.nomount_commit }}
+        run: |
+          set -euo pipefail
+          pip install --quiet "ziglang==0.15.2"
+          bash .github/scripts/build_nomount_module.sh "$NOMOUNT_COMMIT" release-artifacts
 
       - name: Generate Checksums
         run: |
@@ -370,9 +410,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          [[ -n "$BOT_TOKEN" ]] || { echo "::error::BOT_TOKEN is not set"; exit 1; }
-          [[ -n "$CHAT_ID" ]] || { echo "::error::CHAT_ID is not set"; exit 1; }
-          [[ -n "$TOPIC_ID" ]] || { echo "::error::TOPIC_ID is not set"; exit 1; }
+          # Forks don't have the Telegram secrets; skip instead of failing the run.
+          if [[ -z "$BOT_TOKEN" || -z "$CHAT_ID" || -z "$TOPIC_ID" ]]; then
+            echo "::notice::Telegram secrets (BOT_TOKEN, CHAT_ID, TOPIC_ID) not set, skipping Telegram upload"
+            exit 0
+          fi
 
           # MULTI_KERNEL/KERNEL_VERSIONS/KERNEL_VERSION/ANDROID_RELEASE come
           # from prepare_release.py's export_github_env(). ANDROID_RELEASE
